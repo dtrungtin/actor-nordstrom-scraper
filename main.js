@@ -61,7 +61,7 @@ Apify.main(async () => {
         }
 
         if (startUrl.includes('https://shop.nordstrom.com/')) {
-            if (startUrl.includes('productpage')) {
+            if (startUrl.match(/\/\d+\//)) {
                 await requestQueue.addRequest({ url: startUrl, userData: { label: 'item' } });
                 detailsEnqueued++;
             } else {
@@ -84,17 +84,28 @@ Apify.main(async () => {
 
             if (request.userData.label === 'start') {
                 const total = $('._2Frdy._3gp2P').text().split(' ')[0].trim();
-
-
                 const itemLinks = $('._1AOd3.QIjwE ._5lXiG');
-                console.log(itemLinks.length);
+                if (itemLinks.length === 0) {
+                    return;
+                }
+
+                for (let index = 0; index < itemLinks.length; index++) {
+                    if (checkLimit()) {
+                        break;
+                    }
+
+                    const itemUrl = 'https://shop.nordstrom.com' + $(itemLinks[index]).attr('href');
+                    if (itemUrl) {
+                        await requestQueue.addRequest({ url: `${itemUrl}`, userData: { label: 'item' } });
+                        detailsEnqueued++;
+                    }
+                }
 
                 const link = 'https://shop.nordstrom.com/c/booties?origin=topnav&breadcrumb=Home%2FWomen%2FShoes%2FBooties&offset=2&page=2';
 
                 await requestQueue.addRequest({ url: link, userData: { label: 'list' } });
             } else if (request.userData.label === 'list') {
                 const itemLinks = $('._1AOd3.QIjwE ._5lXiG');
-                console.log(itemLinks.length);
                 if (itemLinks.length === 0) {
                     return;
                 }
@@ -112,13 +123,51 @@ Apify.main(async () => {
                 }
 
             } else if (request.userData.label === 'item') {
-                //<script>window.__INITIAL_CONFIG__ = {}</script>
-                const name = $('[itemprop=name]').text();
+                // Extract json in javascript <script>window.__INITIAL_CONFIG__ = {}</script>
+                const javascriptStr = body.match(/__\s=\s\{.*?\}\s*</s)[0].replace('__ =', '').trim().slice(0, -1);
+                const json = safeEval(javascriptStr);
 
-                await Apify.pushData({
+                const itemId = json.viewData.id;
+                const name = json.viewData.productName;
+                const description = json.viewData.description;
+
+                const colorMap = json.viewData.filters.color.byId;
+                const sizeMap = json.viewData.filters.size.byId;
+
+                const sizes = [];
+                let color = '';
+                let price = '';
+                
+                for (const sku of Object.values(json.viewData.skus.byId)) {
+                    const size = sizeMap[`${sku.sizeId}`].displayValue;
+                    sizes.push(size);
+                    color = colorMap[`${sku.colorId}`].displayValue;
+                    price = sku.price;
+                }
+
+                const pageResult = {
                     url: request.url,
                     name,
-                });
+                    description,
+                    itemId,
+                    color,
+                    sizes,
+                    price,
+                    '#debug': Apify.utils.createRequestDebugInfo(request),
+                };
+
+                if (extendOutputFunction) {
+                    const userResult = await extendOutputFunction($);
+
+                    if (!isObject(userResult)) {
+                        console.log('extendOutputFunction has to return an object!!!');
+                        process.exit(1);
+                    }
+
+                    _.extend(pageResult, userResult);
+                }
+
+                await Apify.pushData(pageResult);
             }
         },
 
